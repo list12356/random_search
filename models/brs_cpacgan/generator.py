@@ -7,11 +7,11 @@ class Generator:
         self.pac_num = pac_num
         self.mode = mode
         
-        self.G_W1 = tf.Variable(xavier_init([Z_dim, 128]))
-        self.G_b1 = tf.Variable(tf.zeros(shape=[128]))
+        self.G_W1 = tf.Variable(xavier_init([Z_dim, 128]), name="W1")
+        self.G_b1 = tf.Variable(tf.zeros(shape=[128]), name="b1")
 
-        self.G_W2 = tf.Variable(xavier_init([128, data_dim]))
-        self.G_b2 = tf.Variable(tf.zeros(shape=[data_dim]))
+        self.G_W2 = tf.Variable(xavier_init([128, data_dim]), name="W2")
+        self.G_b2 = tf.Variable(tf.zeros(shape=[data_dim]), name="b2")
 
         self.Z = []
         for i in range(self.pac_num):

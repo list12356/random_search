@@ -7,6 +7,7 @@ import csv
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy import stats
+from time import sleep
 
 from utils.utils import sample_Z
 from utils.utils import plot_mnist
@@ -20,24 +21,63 @@ from models.brs_cpacgan.dataloader import PatternDataLoader
 
 import multiprocessing as mp
 
-def search_run(sess, search_num, v, searcher, update_Sp, update_Sn, S_loss, feed_S, indices, delta_ph, update):
-    delta = [None] * len(indices)
+def search_run(cluster, worker_n, search_num, indices, alpha, v, S_loss_name):
+    
+    theta_G = tf.trainable_variables(scope="generator")
+    theta_S = tf.trainable_variables(scope="searcher_" + str(worker_n))
+    S_loss = tf.get_default_graph().get_tensor_by_name(S_loss_name)
+    delta_ph = [None] * len(indices)
+    update_Sp = [None] * len(indices)
+    update_Sn = [None] * len(indices)
+    update_Gph = [None] * len(indices)
+    update_G = [None] * len(indices)
+
     for i, t in enumerate(indices):
-        delta[i] = v*np.random.normal(loc=0.0, scale=1.,
-                        size=[search_num] + searcher.theta_G[t].get_shape().as_list())     
-    for m in range(search_num):
+        delta_ph[i] = tf.placeholder(tf.float32, shape=theta_G[t].get_shape().as_list())
+        update_Sp[i] = tf.assign(theta_S[t], theta_S[t] + delta_ph[i])
+        update_Sn[i] = tf.assign(theta_S[t], theta_G[t] - delta_ph)
+        
+        update_Gph[i] = tf.placeholder(tf.float32, shape=theta_G[t].get_shape().as_list())
+        update_G[i] = tf.assign(theta_G[t], theta_G[t] + update_Gph[t])
+    
+    server = tf.train.Server(cluster,
+                             job_name="worker",
+                             task_index=worker_n)
+    sess = tf.Session(target=server.target)
+    
+    print("Worker %d: waiting for cluster connection..." % worker_n)
+    sess.run(tf.report_uninitialized_variables())
+    print("Worker %d: cluster ready!" % worker_n)
+    
+    while sess.run(tf.report_uninitialized_variables()):
+        print("Worker %d: waiting for variable initialization..." % worker_n)
+        sleep(1.0)
+    print("Worker %d: variables initialized" % worker_n)
+
+    for it in range(100000):
+        delta = [None] * len(indices)
+        update = [None] * len(indices)
+        feed_S = None
         for i, t in enumerate(indices):
-            sess.run(update_Sp[i], feed_dict={delta_ph[i]: delta[i][m]})
-        reward = sess.run(S_loss, feed_dict=feed_S)
+            delta_ph[i] = tf.placeholder(tf.float32, shape=theta_G[t].get_shape().as_list())
+            delta[i] = v*np.random.normal(loc=0.0, scale=1.,
+                            size=[search_num] + theta_G[t].get_shape().as_list())
+        for m in range(search_num):
+            for i, t in enumerate(indices):
+                sess.run(update_Sp[i], feed_dict={delta_ph[i]: delta[i][m]})
+            reward = sess.run(S_loss, feed_dict=feed_S)
+            for i, t in enumerate(indices):
+                sess.run(update_Sn[i], feed_dict={delta_ph[i]: delta[i][m]})
+            tmp = sess.run(S_loss, feed_dict=feed_S)
+            reward = reward - tmp
+            for i, t in enumerate(indices):
+                if m == 0:
+                    update[i] = reward * delta[i][m]
+                else:
+                    update[i] += reward * delta[i][m]
+        
         for i, t in enumerate(indices):
-            sess.run(update_Sn[i], feed_dict={delta_ph[i]: delta[i][m]})
-        tmp = sess.run(S_loss, feed_dict=feed_S)
-        reward = reward - tmp
-        for i, t in enumerate(indices):
-            if m == 0:
-                update[t] = reward * delta[i][m]
-            else:
-                update[t] += reward * delta[i][m]
+            sess.run(update_G[i], feed_dict={update_Gph[i]: update[i] * alpha / (search_num * v)})
     return
 
 class BRSCPacGAN:
@@ -48,7 +88,7 @@ class BRSCPacGAN:
         self.save_step = 100
         self.Z_dim = 10
         self.search_num = 64
-        self.num_workers = 2
+        self.num_workers = 4
         self.alpha = alpha
         self.v = 0.02
         self._lambda = _lambda
@@ -75,35 +115,40 @@ class BRSCPacGAN:
         self.gan_structure = gan_structure
         self.wasserstein = wasserstein
 
-        if gan_structure == "vanila":
-            self.G = Generator(self.Z_dim,self.data_dim, self.pac_num, self.mode)
-        elif gan_structure == "dc":
-            self.G = DCGenerator(self.Z_dim,self.data_dim, self.pac_num, self.mode, self.batch_size)
+        with tf.variable_scope("generator"):
+            if gan_structure == "vanila":
+                self.G = Generator(self.Z_dim,self.data_dim, self.pac_num, self.mode)
+            elif gan_structure == "dc":
+                self.G = DCGenerator(self.Z_dim,self.data_dim, self.pac_num, self.mode, self.batch_size)
         self.G_sample = self.G.G_sample
 
         self.S_sample = [None] * self.num_workers
         self.S  = [None] * self.num_workers
         for w in range(self.num_workers):
-            if gan_structure == "vanila":
-                self.S[w] = Generator(self.Z_dim,self.data_dim, self.pac_num, self.mode)
-            elif gan_structure == "dc":
-                self.S[w] = DCGenerator(self.Z_dim,self.data_dim, self.pac_num, self.mode, self.batch_size)
+            with tf.variable_scope("searcher_" + str(w)):
+                if gan_structure == "vanila":
+                    self.S[w] = Generator(self.Z_dim,self.data_dim, self.pac_num, self.mode)
+                elif gan_structure == "dc":
+                    self.S[w] = DCGenerator(self.Z_dim,self.data_dim, self.pac_num, self.mode, self.batch_size)
             self.S_sample[w] = self.S[w].G_sample
 
         self.X = []
         for p in range(self.pac_num):
             self.X.append(tf.placeholder(tf.float32, shape=[self.batch_size, self.data_dim]))
 
-        if gan_structure == "vanila":
-            self.D = Discriminator(self.pac_num, self.data_dim)
-        elif gan_structure == "dc":
-            self.D = DCDiscriminator(self.pac_num, self.data_dim, self.batch_size)
+        with tf.variable_scope("discriminator"):
+            if gan_structure == "vanila":
+                self.D = Discriminator(self.pac_num, self.data_dim)
+            elif gan_structure == "dc":
+                self.D = DCDiscriminator(self.pac_num, self.data_dim, self.batch_size)
+        
         D_real, D_logit_real = self.D.build(self.X)
         D_fake, D_logit_fake = self.D.build(self.G_sample)
 
         if self.wasserstein == 0:
-            self.D_loss = -tf.reduce_mean(tf.log(tf.clip_by_value(D_real, 1e-16, 1.0)) + tf.log(tf.clip_by_value(1. - D_fake, 1e-16, 1.)))
-            self.G_loss = tf.reduce_mean(tf.log(tf.clip_by_value(D_fake, 1e-16, 1.0))) * tf.constant(_lambda)
+            self.D_loss = -tf.reduce_mean(tf.log(tf.clip_by_value(D_real, 1e-16, 1.0))\
+                 + tf.log(tf.clip_by_value(1. - D_fake, 1e-16, 1.)))
+            self.G_loss = tf.reduce_mean(tf.log(tf.clip_by_value(D_fake, 1e-16, 1.0)))
         else:
             self.D_loss = -tf.reduce_mean(D_logit_real) + tf.reduce_mean(D_logit_fake)
             self.G_loss = tf.reduce_mean(D_logit_fake)
@@ -112,9 +157,11 @@ class BRSCPacGAN:
         for w in range(self.num_workers):
             S_fake, S_logit_fake = self.D.build(self.S_sample[w])
             if self.wasserstein == 0:
-                self.S_loss[w] = tf.reduce_mean(tf.log(S_fake)) * tf.constant(_lambda)
+                loss = tf.reduce_mean(tf.log(S_fake), name="s_loss_" + str(w))
             else:
-                self.S_loss[w] = tf.reduce_mean(S_logit_fake)
+                loss = tf.reduce_mean(S_logit_fake, name="s_loss_" + str(w))
+            self.S_loss[w] = loss.name
+        
         # Alternative losses:
         # -------------------
         # D_loss_real = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=D_logit_real, labels=tf.ones_like(D_logit_real)))
@@ -137,13 +184,18 @@ class BRSCPacGAN:
                 self.G_solver = tf.train.AdamOptimizer().minimize(-self.G_loss, var_list=self.G.theta_G)
 
         else:
-            self.slices = [[]] * self.num_workers
-            self.update_Sp = [[]] * self.num_workers
-            self.update_Sn = [[]] * self.num_workers
-            self.delta_ph = [[]] * self.num_workers
+            self.slices = [None] * self.num_workers
+            self.update_Sp = [None] * self.num_workers
+            self.update_Sn = [None] * self.num_workers
+            self.delta_ph = [None] * self.num_workers
             self.update_G = [None] * len(self.G.theta_G)
             self.update_Gph = [None] * len(self.G.theta_G)
             self.delta = [None] * len(self.G.theta_G)
+            for w in range(self.num_workers):
+                self.slices[w] = []
+                self.update_Sp[w] = []
+                self.update_Sn[w] = []
+                self.delta_ph[w] = []
             print('creating')
             for t in range(len(self.G.theta_G)):
                 w = t % self.num_workers
@@ -161,17 +213,16 @@ class BRSCPacGAN:
         
         if os.path.exists(self.out_dir) == False:
             os.makedirs(self.out_dir)
-        config = tf.ConfigProto()
-        config.gpu_options.allow_growth = True
-        tasks = []
+        workers = []
         for w in range(self.num_workers):
-            tasks.append("localhost:" + str(2222+w))
-        jobs = {"local": tasks}
-        cluster = tf.train.ClusterSpec(jobs)
+            workers.append("localhost:" + str(2223+w))
+        cluster = tf.train.ClusterSpec({"worker": workers})
         self.sess = []
         for w in range(self.num_workers):
-            server = tf.train.Server(cluster, job_name="local", task_index=w)
-            self.sess.append(tf.Session(server.target))
+            server = tf.train.Server(cluster,
+                             job_name="worker",
+                             task_index=w)
+            self.sess.append(tf.Session(target=server.target))
 
     def train(self):
         img_num = 0
@@ -222,41 +273,42 @@ class BRSCPacGAN:
                 feed_G[self.G.Z[p]] = sample[p]
             update = [None] * len(self.G.theta_G)
             # update = manager.list([None] * len(self.G.theta_G))
-            # reward_list = [None] * self.search_num
-            # reward_list_2 = [None] * self.search_num
-            # delta_list = []
+            reward_list = [None] * self.search_num
+            reward_list_2 = []
+            delta_list = []
 
             if self.mode == "gradient":
                 _, G_loss_curr = self.sess[0].run([self.G_solver, self.G_loss], feed_dict=feed_G)
             else:
-                # for m in range(self.search_num):
-                #     delta = []
-                #     for t in range(len(self.G.theta_G)):
-                #         delta.append(self.v*np.random.normal(loc=0.0, scale=1.,
-                #                                     size=self.G.theta_G[t].get_shape().as_list()))
-                #     for t in range(len(self.G.theta_G)):
-                #         self.sess.run(self.update_Sp[t], feed_dict={self.delta_ph[t]: delta[t]})
-                #     reward = self.sess.run(self.S_loss, feed_dict=feed_S)
-                #     reward_list_2.append(reward)
-                #     for t in range(len(self.G.theta_G)):
-                #         self.sess.run(self.update_Sn[t], feed_dict={self.delta_ph[t]: delta[t]})
-                #     tmp = self.sess.run(self.S_loss, feed_dict=feed_S)
-                #     reward_list_2.append(tmp)
-                #     reward = reward - tmp
+                delta = []
+                for t in range(len(self.G.theta_G)):
+                    delta.append(self.v*np.random.normal(loc=0.0, scale=1.,
+                                                size=[self.search_num] + self.G.theta_G[t].get_shape().as_list()))
+                for m in range(self.search_num):
+                    reward = [None] * self.num_workers
+                    for t in range(len(self.G.theta_G)):
+                        w = t % self.num_workers
+                        i = t // self.num_workers
+                        # import pdb; pdb.set_trace()
+                        self.sess[w].run(self.update_Sp[w][i], feed_dict={self.delta_ph[w][i]: delta[t][m]})
+                    for w in range(self.num_workers):
+                        reward[w] = self.sess[w].run(self.S_loss[w], feed_dict=feed_S[w])
+                        reward_list_2.append(reward)
+                    for t in range(len(self.G.theta_G)):
+                        w = t % self.num_workers
+                        i = t // self.num_workers
+                        self.sess[w].run(self.update_Sn[w][i], feed_dict={self.delta_ph[w][i]: delta[t][m]})
+                    for w in range(self.num_workers):
+                        tmp = self.sess[w].run(self.S_loss[w], feed_dict=feed_S[w])
+                        reward_list_2.append(tmp)
+                        reward[w] = reward[w] - tmp
 
-                #     reward_list.append(reward)
-                #     delta_list.append(delta)
-
-                # if self.sigma == 1:
-                #     sigma_R = np.std(reward_list_2)
-                # else:
-                #     sigma_R = 1.
-                # if sigma_R == 0:
-                #     sigma_R = 1.
-
-                # for m in range(self.search_num):
-                #     for t in range(len(self.G.theta_G)):
-                #         update[t] += reward_list[m] * delta_list[m][t]
+                    for w in range(self.num_workers):
+                        for t in self.slices[w]:
+                            if m == 0:
+                                update[t] = reward[w] * delta[t][m]
+                            else:
+                                update[t] += reward[w] * delta[t][m]
 
                 # for w in range(self.num_workers):
                 #     p = mp.Process(target=search_run, args=(self.sess, self.search_num, self.v, self.S[w], \
@@ -266,9 +318,6 @@ class BRSCPacGAN:
                 #     p.join()
                 sigma_R = 1
                 for w in range(self.num_workers):
-                    search_run(self.sess[w], self.search_num, self.v, self.S[w], \
-                            self.update_Sp[w], self.update_Sn[w], self.S_loss[w], feed_S[w], self.slices[w], \
-                            self.delta_ph[w], update)
                     for t in self.slices[w]:
                         self.sess[w].run(self.update_G[t], feed_dict={self.update_Gph[t]: update[t] * self.alpha / (self.search_num * sigma_R * self.v)})
 
