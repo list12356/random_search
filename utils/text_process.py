@@ -1,19 +1,6 @@
 # coding=utf-8
 import nltk
-
-
-def chinese_process(filein, fileout):
-    with open(filein, 'r') as infile:
-        with open(fileout, 'w') as outfile:
-            for line in infile:
-                output = list()
-                line = nltk.word_tokenize(line)[0]
-                for char in line:
-                    output.append(char)
-                    output.append(' ')
-                output.append('\n')
-                output = ''.join(output)
-                outfile.write(output)
+import numpy as np
 
 
 def text_to_code(tokens, dictionary, seq_len):
@@ -21,15 +8,33 @@ def text_to_code(tokens, dictionary, seq_len):
     eof_code = len(dictionary)
     for sentence in tokens:
         index = 0
+        code_str += ('0 ')
         for word in sentence:
-            code_str += (str(dictionary[word]) + ' ')
-            index += 1
+            if word in dictionary and index < seq_len:
+                code_str += (str(dictionary[word]) + ' ')
+                index += 1
         while index < seq_len:
             code_str += (str(eof_code) + ' ')
             index += 1
-        code_str += '\n'
+        code_str += (str(eof_code) + ' \n')
     return code_str
 
+def text_to_array(tokens, dictionary, seq_len):
+    codes = []
+    eof_code = len(dictionary)
+    for sentence in tokens:
+        tmp = []
+        tmp.append(0)
+        for word in sentence:
+            if len(tmp) < seq_len:
+                if word in dictionary:
+                    tmp.append(dictionary[word])
+                else:
+                    tmp.append(dictionary['#UNK#'])
+        while len(tmp)  < seq_len:
+            tmp.append(eof_code)
+        codes.append(tmp)
+    return np.array(codes, dtype=int)
 
 def code_to_text(codes, dictionary, seq_len=None):
     paras = ""
@@ -39,10 +44,12 @@ def code_to_text(codes, dictionary, seq_len=None):
         # numbers = [int(s) for s in line.split() if s.isdigit()]
         numbers = map(int, line)
         for number in numbers:
-            if number == eof_code:
+            if number == 0:
                 continue
+            if number == eof_code or (not (str(number) in dictionary)):
+                # continue
                 # paras += '\n'
-                # break
+                break
             # paras += (dictionary[str(number)] + ' ')
             paras += (dictionary[str(number)] + ' ')
         paras += '\n'
@@ -51,72 +58,42 @@ def code_to_text(codes, dictionary, seq_len=None):
 
 def get_tokenlized(file):
     tokenlized = list()
-    with open(file) as raw:
+    with open(file, encoding='utf-8') as raw:
         for text in raw:
             text = nltk.word_tokenize(text.lower())
             tokenlized.append(text)
     return tokenlized
 
 
-def get_word_list(tokens):
+def get_word_list(tokens, word_count_threshold=5):
     word_set = list()
+    word_counts = {}
     for sentence in tokens:
         for word in sentence:
-            word_set.append(word)
-    return list(set(word_set))
-
+            word_counts[word] = word_counts.get(word, 0) + 1
+    vocab =  [w for w in word_counts if word_counts[w] >= word_count_threshold]
+    print('filtered words from %d to %d' % (len(word_counts), len(vocab)))
+    return vocab
 
 def get_dict(word_set):
     word_index_dict = dict()
     index_word_dict = dict()
-    index = 0
+    index = 1
+    word_index_dict['#START#'] = 0
+    index_word_dict['0'] = '#START#'
     for word in word_set:
         word_index_dict[word] = str(index)
         index_word_dict[str(index)] = word
         index += 1
+    word_index_dict['#UNK#'] = str(index)
+    index_word_dict[str(index)] = '#START#'
     return word_index_dict, index_word_dict
 
-
-# def text_precess(train_text_loc, test_text_loc=None):
-#     train_tokens = get_tokenlized(train_text_loc)
-#     if test_text_loc is None:
-#         test_tokens = list()
-#     else:
-#         test_tokens = get_tokenlized(test_text_loc)
-#     word_set = get_word_list(train_tokens + test_tokens)
-#     # text = train_text + test_text
-#     [word_index_dict, index_word_dict] = get_dict(word_set)
-#     with open('save/word_index_dict.json', 'w') as outfile:
-#         json.dump(word_index_dict, outfile)
-#     with open('save/index_word_dict.json', 'w') as outfile:
-#         json.dump(index_word_dict, outfile)
-#     if test_text_loc is None:
-#         sequence_len = len(max(train_tokens, key=len))
-#     else:
-#         sequence_len = max(len(max(train_tokens, key=len)), len(max(test_tokens, key=len)))
-#     with open('save/eval_data.txt', 'w') as outfile:
-#         outfile.write(text_to_code(test_tokens, word_index_dict, sequence_len))
-#     paras = dict()
-#     paras['sequence_len'] = sequence_len
-#     paras['vocab_size'] = len(word_index_dict)
-#     with open('paras/paras.json', 'w') as outfile:
-#         json.dump(paras, outfile)
-#     return sequence_len, len(word_index_dict) + 1, 'save/word_index_dict.json', 'save/index_word_dict.json'
-
-def text_precess(train_text_loc, test_text_loc=None):
+def text_precess(train_text_loc, word_count_threshold=5):
     train_tokens = get_tokenlized(train_text_loc)
-    if test_text_loc is None:
-        test_tokens = list()
-    else:
-        test_tokens = get_tokenlized(test_text_loc)
-    word_set = get_word_list(train_tokens + test_tokens)
+    word_set = get_word_list(train_tokens, word_count_threshold)
     [word_index_dict, index_word_dict] = get_dict(word_set)
 
-    if test_text_loc is None:
-        sequence_len = len(max(train_tokens, key=len))
-    else:
-        sequence_len = max(len(max(train_tokens, key=len)), len(max(test_tokens, key=len)))
-    with open('save/eval_data.txt', 'w') as outfile:
-        outfile.write(text_to_code(test_tokens, word_index_dict, sequence_len))
+    sequence_len = len(max(train_tokens, key=len))
 
     return sequence_len, len(word_index_dict) + 1

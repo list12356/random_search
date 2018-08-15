@@ -7,7 +7,7 @@ if __name__ == '__main__':
     # mp.set_start_method('spawn')
     parser = argparse.ArgumentParser(description='Process some integers.')
     parser.add_argument('--dir', default="out_brs_pac")
-    parser.add_argument('--alpha', type=float, default=0.2)
+    parser.add_argument('--alpha', type=float, default=0.01)
     parser.add_argument('--l', type=float, default=1.0)
     parser.add_argument('--sigma', type=int, default=0)
     parser.add_argument('--mode', default="binary")
@@ -23,7 +23,7 @@ if __name__ == '__main__':
     Z_dim = 100
     search_num = 64
     alpha = args.alpha
-    v = 0.02
+    v = 0.001
     _lambda = args.l
     mode = args.mode
     restore = False

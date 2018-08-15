@@ -18,7 +18,7 @@ class Generator:
             self.Z.append(tf.placeholder(tf.float32, shape=[None, Z_dim]))
 
         self.theta_G = [self.G_W1, self.G_W2, self.G_b1, self.G_b2]
-        self.size = [[Z_dim, 128], [128,data_dim], [128], [data_dim]]
+        self.size = [self.theta_G[t].get_shape().as_list() for t in range(len(self.theta_G))]
         self.build()
     
     def build(self):
@@ -118,6 +118,7 @@ class DCGenerator:
                     exit()
 
         self.theta_G = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='g')
+        self.size = [self.theta_G[t].get_shape().as_list() for t in range(len(self.theta_G))]
 
     def update(self):
         return
