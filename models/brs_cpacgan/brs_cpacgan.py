@@ -177,7 +177,6 @@ class BRSCPacGAN:
                 self.update_G_op = tf.group(*self.update_G)
             print('finished')
 
-        import pdb; pdb.set_trace()
         print("delta")
         self.noise = SharedNoiseTable()
         self.rs = np.random.RandomState()
@@ -281,6 +280,7 @@ class BRSCPacGAN:
                 tmp = self.sess.run(self.S_reward, feed_dict=feed_S)
                 reward = reward - tmp
 
+                import pdb; pdb.set_trace()
                 feed_update[self.reward_ph] = reward
                 self.sess.run(self.update_G_op, feed_dict=feed_update)
 
