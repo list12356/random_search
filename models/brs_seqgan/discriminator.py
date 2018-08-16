@@ -275,6 +275,7 @@ class RNNDiscriminator(object):
     def build(self, X):
         state = self.lstm.zero_state(batch_size=self.batch_size, dtype=tf.float32)
         final_state = tf.zeros(shape = [self.batch_size, self.dim_hidden], dtype=tf.float32)
+        prob = []
         with tf.variable_scope("RNN", reuse=self.reuse) as vs_lstm:
             output, state = self.lstm(self.image_emb, state)
             last_word = tf.nn.embedding_lookup(self.Wemb, self.start_token) + self.bemb
@@ -284,12 +285,13 @@ class RNNDiscriminator(object):
                     with tf.device("/cpu:0"):
                         current_emb = tf.nn.embedding_lookup(self.Wemb, X[:,i-1]) + self.bemb
                     output, state = self.lstm(current_emb, state) # (batch_size, dim_hidden)
-                    
+                    logit = tf.nn.xw_plus_b(x=output, weights=self.fc_W, biases=self.fc_b)        
                     # final_state += tf.transpose(tf.transpose(tf.concat(state, axis=1))) # * self.mask[:, i])
-                    final_state += output
+                    # final_state += output
+                    prob.append(tf.nn.sigmoid(logit))
 
-            logit = tf.nn.xw_plus_b(x=final_state, weights=self.fc_W, biases=self.fc_b)
-            prob = tf.nn.sigmoid(logit)
+            # logit = tf.nn.xw_plus_b(x=final_state, weights=self.fc_W, biases=self.fc_b)
+            prob =tf.transpose(tf.stack(prob))
         # for v in tf.all_variables():
         #     if v.name.startswith(vs_lstm.name):
         #         self.theta_G.append(v)
