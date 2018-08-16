@@ -291,10 +291,8 @@ class BRSSeqgan():
                 # self.generator.image: img_batch,
                 self.generator.noise: sample
                 }
-            if self.debug_entropy == True:
-                feed_entropy = {}
-                for w in range(self.num_workers):
-                    # feed[self.searcher[w].image] = img_batch
+            feed_entropy = {}
+            for w in range(self.num_workers):
                     feed[self.searcher[w].noise] = sample
                     feed_entropy[self.searcher[w].sentence] = seq_batch
                     feed_entropy[self.searcher[w].noise] = sample
