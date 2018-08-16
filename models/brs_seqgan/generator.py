@@ -127,53 +127,42 @@ class Generator(object):
         
 
         # define model for MLE training
+        loss = 0.0
+        adv_loss = 0.0
+        state = self.lstm.zero_state(batch_size=self.batch_size, dtype=tf.float32)
+        with tf.variable_scope("RNN") as vs_lstm:
+            current_emb = self.image_emb
+            output, state = self.lstm(current_emb, state) # (batch_size, dim_hidden)
+            with tf.variable_scope(tf.get_variable_scope(), reuse=True):
+                for i in range(1, self.sequence_length): # maxlen + 1
+                    with tf.device("/cpu:0"):
+                        current_emb = tf.nn.embedding_lookup(self.Wemb, self.sentence[:,i-1]) + self.bemb
+                    output, state = self.lstm(current_emb, state) # (batch_size, dim_hidden)
+                    labels = tf.expand_dims(self.sentence[:, i], 1) # (batch_size)
+                    indices = tf.expand_dims(tf.range(0, self.batch_size, 1), 1)
+                    concated = tf.concat([indices, labels], 1)
+                    onehot_labels = tf.sparse_to_dense(
+                            concated, tf.stack([self.batch_size, self.n_words]), 1.0, 0.0) # (batch_size, n_words)
+
+                    logit_words = tf.matmul(output, self.embed_word_W) + self.embed_word_b # (batch_size, n_words)
+                    cross_entropy = tf.nn.softmax_cross_entropy_with_logits(logits=logit_words, labels=onehot_labels)
+                    cross_entropy = cross_entropy # * self.mask[:,i]
+
+                    current_loss = tf.reduce_sum(cross_entropy)
+                    adv_loss = adv_loss + current_loss*self.reward[i]
+                    loss = loss + current_loss
+
+        for v in tf.all_variables():
+            if v.name.startswith(vs_lstm.name):
+                self.theta_G.append(v)
+
+        self.size = [self.theta_G[t].get_shape().as_list() for t in range(len(self.theta_G))]
+        self.pretrain_loss = loss / self.sequence_length # / tf.reduce_sum(self.mask[:,1:])
+            
         if gradient ==True:
-        
-            state = self.lstm.zero_state(batch_size=self.batch_size, dtype=tf.float32)
-
-            loss = 0.0
-            adv_loss = 0.0
-            with tf.variable_scope("RNN") as vs_lstm:
-                current_emb = self.image_emb
-                output, state = self.lstm(current_emb, state) # (batch_size, dim_hidden)
-                with tf.variable_scope(tf.get_variable_scope(), reuse=True):
-                    for i in range(1, self.sequence_length): # maxlen + 1
-                        with tf.device("/cpu:0"):
-                            current_emb = tf.nn.embedding_lookup(self.Wemb, self.sentence[:,i-1]) + self.bemb
-                        output, state = self.lstm(current_emb, state) # (batch_size, dim_hidden)
-                        labels = tf.expand_dims(self.sentence[:, i], 1) # (batch_size)
-                        indices = tf.expand_dims(tf.range(0, self.batch_size, 1), 1)
-                        concated = tf.concat([indices, labels], 1)
-                        onehot_labels = tf.sparse_to_dense(
-                                concated, tf.stack([self.batch_size, self.n_words]), 1.0, 0.0) # (batch_size, n_words)
-
-                        logit_words = tf.matmul(output, self.embed_word_W) + self.embed_word_b # (batch_size, n_words)
-                        cross_entropy = tf.nn.softmax_cross_entropy_with_logits(logits=logit_words, labels=onehot_labels)
-                        cross_entropy = cross_entropy * self.mask[:,i]#tf.expand_dims(self.mask, 1)
-
-                        current_loss = tf.reduce_sum(cross_entropy)
-                        adv_loss = adv_loss + current_loss*self.reward[i]
-                        loss = loss + current_loss
-
-            for v in tf.all_variables():
-                if v.name.startswith(vs_lstm.name):
-                    self.theta_G.append(v)
-
-            self.size = [self.theta_G[t].get_shape().as_list() for t in range(len(self.theta_G))]
-            self.pretrain_loss = loss / tf.reduce_sum(self.mask[:,1:])
             self.pretrain_updates = tf.train.AdamOptimizer(self.learning_rate).minimize(self.pretrain_loss, var_list=self.theta_G)
-            self.loss = adv_loss / tf.reduce_sum(self.mask[:,1:])
+            self.loss = adv_loss # / tf.reduce_sum(self.mask[:,1:])
             self.adv_updates = tf.train.AdamOptimizer(self.learning_rate).minimize(self.loss)
-        
-        else:
-            state = self.lstm.zero_state(batch_size=self.batch_size, dtype=tf.float32)
-            with tf.variable_scope("RNN") as vs_lstm:
-                current_emb = self.image_emb
-                output, state = self.lstm(current_emb, state)
-
-            for v in tf.all_variables():
-                if v.name.startswith(vs_lstm.name):
-                    self.theta_G.append(v)
 
     def build_beam(self):
         self.state_feed = tf.placeholder(dtype=tf.float32,

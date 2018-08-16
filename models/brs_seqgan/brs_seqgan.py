@@ -19,7 +19,7 @@ import matplotlib.image as mpimg
 
 
 class BRSSeqgan():
-    def __init__(self, oracle=None, save_dir=None,
+    def __init__(self, oracle=None, save_dir=None, debug_entropy=False,
             pre_epoch_num=0, disc_type="RNN", sample_mode=RNN_SAMPLE_NOISE,
             search_num=64, alpha=0.1, v=0.02, sigma=0, rollout_num=1
             ):
@@ -35,12 +35,6 @@ class BRSSeqgan():
         self.batch_size = 128
         self.generate_num = 128
         self.start_token = 0
-
-        # self.mcmc_num = 1
-        # self.prior_std = 1.0
-        # self.eta = 2e-4
-        # self.alpha = 0.01
-        # self.noise_std = np.sqrt(2 * self.alpha * self.eta)
         
         self.img_feature_dim = 0
         self.noise_dim = 100
@@ -50,6 +44,7 @@ class BRSSeqgan():
         self.save_step = 100
         self.restore_step = 5000
         self.evaluate_step = 1000
+        self.debug_entropy = debug_entropy
 
         # for language processing
         self.wi_dict = None
@@ -76,7 +71,7 @@ class BRSSeqgan():
 
         # for search prameters
         self.search_num = 64
-        self.num_workers = 64
+        self.num_workers = 16
         self.alpha = alpha
         self.v = v
         self.sigma = sigma
@@ -95,38 +90,6 @@ class BRSSeqgan():
 
     def evaluate(self):
         return
-        # test_num = 1000 // 64
-        # evaluate_file = self.save_dir + "/evaluate.txt"
-        # reference_file = self.save_dir + "reference.txt"
-        # score_list = []
-        # text_list = []
-        # ref_list = []
-        # for _ in range(test_num):
-        #     img_data, img_meta, text_meta = self.data_loader.next_test_batch()
-        #     feed = {self.generator[0].c: img_data}
-        #     outputs = self.sess.run(self.generator[0].gen_x, feed_dict = feed)
-        #     outputs = outputs.tolist()
-        #     score_batch = []
-        #     hypo_text = [[self.iw_dict[str(x)] for x in line if x != len(self.iw_dict)] for line in outputs]
-        #     # hypo_text = code_to_text(codes=outputs, dictionary=self.iw_dict)
-        #     for _ in range(self.batch_size):
-        #         ref_text = get_tokenlized(text_meta[_])
-        #         text_list.append(' '.join(hypo_text[_]))
-        #         ref_list.append(ref_text)
-        #         score = sentence_bleu(ref_text, hypo_text[_])
-        #         score_batch.append(score)
-        #     score = np.mean(score_batch)
-        #     print(score)
-        #     score_list.append(score)
-        # np.mean(score_list)
-        # with open(evaluate_file, 'w') as file:
-        #     for line in text_list:
-        #         file.write(line + '\n')
-
-        # with open(reference_file, 'w') as file:
-        #     for line in ref_list:
-        #         file.write(' # '.join([' '.join(x) for x in line]))
-        #         file.write('\n')
 
     def init_train(self, dataset="text"):
         if dataset == "flickr":
@@ -183,9 +146,12 @@ class BRSSeqgan():
             # self.update_Sn[w] = []
             self.delta_ph[w] = []
             self.S_reward_ph[w] = tf.placeholder(tf.int32, shape=(self.batch_size, self.sequence_length))
-            # prob = self.discriminator.build(self.S_reward_ph[w])
-            prob = self.discriminator.build(self.searcher[w].generated_words)
-            self.S_loss[w] = tf.reduce_mean(tf.log(tf.clip_by_value(prob, 1e-16, 1.0)))
+            if self.debug_entropy == True:
+                self.S_loss[w] = -self.searcher[w].pretrain_loss
+            else:
+                # prob = self.discriminator.build(self.S_reward_ph[w])
+                prob = self.discriminator.build(self.searcher[w].generated_words)
+                self.S_loss[w] = tf.reduce_mean(tf.log(tf.clip_by_value(prob, 1e-16, 1.0)))
             self.S_sample_list[w] = self.searcher[w].generated_words
             for t in range(len(self.generator.theta_G)):
                 with tf.device("/device:GPU:0"):
@@ -325,9 +291,13 @@ class BRSSeqgan():
                 # self.generator.image: img_batch,
                 self.generator.noise: sample
                 }
-            for w in range(self.num_workers):
-                # feed[self.searcher[w].image] = img_batch
-                feed[self.searcher[w].noise] = sample
+            if self.debug_entropy == True:
+                feed_entropy = {}
+                for w in range(self.num_workers):
+                    # feed[self.searcher[w].image] = img_batch
+                    feed[self.searcher[w].noise] = sample
+                    feed_entropy[self.searcher[w].sentence] = seq_batch
+                    feed_entropy[self.searcher[w].noise] = sample
                 
             delta = []
             for t in range(len(self.generator.theta_G)):
@@ -346,72 +316,24 @@ class BRSSeqgan():
 
             self.sess.run(self.update_Sp_op, feed_dict=feed_update)
             
-            # for w in range(self.num_workers):
-            #     for r in range(self.rollout_num):
-            #         generated_samples = self.sess.run(self.searcher[w].generated_words, feed_dict=feed)
-            #         # generated_samples = np.transpose(np.array(generated_samples))
-            #         # current_mask_matrix = np.zeros((generated_samples.shape[0], generated_samples.shape[1]))
-            #         # nonzeros = list(map(lambda x: (x != eof).sum() + 1, generated_samples))
-            #         # for ind, row in enumerate(current_mask_matrix):
-            #         #     if nonzeros[ind] < generated_samples.shape[1]:
-            #         #         row[nonzeros[ind]] = 1
-            #         #     else:
-            #         #         row[generated_samples.shape[1] - 1] = 1
-            #         # feed[self.discriminator.mask] = current_mask_matrix
-            #         feed[self.discriminator.sentence] = generated_samples
-            #         tmp = self.sess.run(self.discriminator.reward, feed_dict=feed)
-            #         # reward = self.generator.get_reward(self.sess, 
-            #         #     generated_samples, img_batch, current_mask_matrix, 
-            #         #     32, self.discriminator)
-            #         reward_pos += tmp
-
-            #     reward_pos = reward_pos / self.rollout_num
-            #     reward[w] = reward_pos
-            #     reward_list_2.append(reward_pos)
-            # generated_samples = self.sess.run(self.S_sample, feed_dict=feed)
-            # feed_reward = {}
-            # for w in range(self.num_workers):
-            #     feed_reward[self.S_reward_ph[w]] = generated_samples[w]
-            reward = self.sess.run(self.S_reward, feed_dict=feed)
+            if self.debug_entropy == True:
+                reward = self.sess.run(self.S_reward, feed_dict=feed_entropy)
+            else:
+                reward = self.sess.run(self.S_reward, feed_dict=feed)
 
             self.sess.run(self.update_Sn_op, feed_dict=feed_update)
             
-            # for w in range(self.num_workers):
-            #     reward_neg = 0
-            #     for r in range(self.rollout_num):
-            #         generated_samples = self.sess.run(self.searcher[w].generated_words, feed_dict=feed)
-            #         # generated_samples = np.transpose(np.array(generated_samples))
-            #         current_mask_matrix = np.zeros((generated_samples.shape[0], generated_samples.shape[1]))
-            #         nonzeros = list(map(lambda x: (x != eof).sum() + 1, generated_samples))
-            #         for ind, row in enumerate(current_mask_matrix):
-            #             if nonzeros[ind] < generated_samples.shape[1]:
-            #                 row[nonzeros[ind]] = 1
-            #             else:
-            #                 row[generated_samples.shape[1] - 1] = 1
-            #         feed[self.discriminator.sentence] = generated_samples
-            #         feed[self.discriminator.mask] = current_mask_matrix
-            #         tmp = self.sess.run(self.discriminator.reward, feed_dict=feed)
-            #         # tmp = self.generator.get_reward(self.sess, 
-            #         #     generated_samples, img_batch, current_mask_matrix, 
-            #         #     32, self.discriminator)
-            #         reward_neg += tmp
-                
-            #     reward_neg = reward_neg / self.rollout_num
-            #     reward_list_2.append(reward_neg)
-            #     reward[w] = reward[w] - reward_neg
-            
-            # generated_samples = self.sess.run(self.S_sample, feed_dict=feed)
-            # feed_reward = {}
-            # for w in range(self.num_workers):
-            #     feed_reward[self.S_reward_ph[w]] = generated_samples[w]
-            tmp = self.sess.run(self.S_reward, feed_dict=feed)
+            G_loss_curr = np.mean(reward)
+            if self.debug_entropy == True:
+                tmp = self.sess.run(self.S_reward, feed_dict=feed_entropy)
+            else:
+                tmp = self.sess.run(self.S_reward, feed_dict=feed)
+            sigma = np.concatenate([tmp, reward])
             reward = reward - tmp
 
             if self.sigma == 1:
-                sigma_R = np.std(reward_list_2)
+                sigma_R = np.std(sigma)
             else:
-                sigma_R = 1.
-            if sigma_R == 0:
                 sigma_R = 1.
 
             feed_update[self.reward_ph] = reward
@@ -419,24 +341,17 @@ class BRSSeqgan():
 
             generated_samples = self.sess.run(self.generator.generated_words, feed_dict=feed)
             # generated_samples = np.transpose(np.array(generated_samples))
-            current_mask_matrix = np.zeros((generated_samples.shape[0], generated_samples.shape[1]))
-            nonzeros = list(map(lambda x: (x != eof).sum() + 1, generated_samples))
-            for ind, row in enumerate(current_mask_matrix):
-                if nonzeros[ind] < generated_samples.shape[1]:
-                    row[nonzeros[ind]] = 1
-                else:
-                    row[generated_samples.shape[1] - 1] = 1
+            # current_mask_matrix = np.zeros((generated_samples.shape[0], generated_samples.shape[1]))
+            # nonzeros = list(map(lambda x: (x != eof).sum() + 1, generated_samples))
+            # for ind, row in enumerate(current_mask_matrix):
+            #     if nonzeros[ind] < generated_samples.shape[1]:
+            #         row[nonzeros[ind]] = 1
+            #     else:
+            #         row[generated_samples.shape[1] - 1] = 1
             feed[self.discriminator.sentence] = generated_samples
-            feed[self.discriminator.mask] = current_mask_matrix
-            G_loss_curr = self.sess.run(self.discriminator.reward, feed_dict=feed)
+            # G_loss_curr = self.sess.run(self.discriminator.reward, feed_dict=feed)
 
-            # x, y, c = self.data_loader.disc_batch(generated_samples)
             feed[self.discriminator.truth] = seq_batch
-            # real_reward = self.sess.run(self.discriminator.real, feed_dict=feed)
-            # feed[self.discriminator.sentence] = x
-            # feed[self.discriminator.label] = y
-            # feed[self.discriminator.image] = c
-            # for i in range(15):
             D_loss_curr,_ = self.sess.run([self.discriminator.d_loss, self.discriminator.train_op], feed_dict=feed)
             
             end = time()
@@ -444,6 +359,7 @@ class BRSSeqgan():
             print('epoch:' + str(epoch) + '\t time:' + str(end - start))
             print('D loss: '+ str(D_loss_curr))
             print('G_loss: ' + str(G_loss_curr))
+            print('Sigma_R: {:.4}'.format(sigma_R))
             # print('Real_reward: ' + str(real_reward))
             print('')
             if epoch % self.save_step == 0 or epoch == self.adversarial_epoch_num - 1:

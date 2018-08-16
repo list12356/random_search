@@ -7,9 +7,9 @@ if __name__ == '__main__':
     # mp.set_start_method('spawn')
     parser = argparse.ArgumentParser(description='Process some integers.')
     parser.add_argument('--dir', default="out_brs_pac")
-    parser.add_argument('--alpha', type=float, default=0.01)
+    parser.add_argument('--alpha', type=float, default=0.1)
     parser.add_argument('--l', type=float, default=1.0)
-    parser.add_argument('--sigma', type=int, default=0)
+    parser.add_argument('--sigma', type=int, default=1)
     parser.add_argument('--mode', default="binary")
     parser.add_argument('--pac_num', type=int, default=1)
     parser.add_argument('--wasserstein', type=int, default=0)
@@ -19,11 +19,8 @@ if __name__ == '__main__':
 
     out_dir = args.dir
     save_step = 1000
-    data_dim = 784
-    Z_dim = 100
-    search_num = 64
     alpha = args.alpha
-    v = 0.001
+    v = 0.02
     _lambda = args.l
     mode = args.mode
     restore = False

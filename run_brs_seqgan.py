@@ -4,9 +4,9 @@ from models.brs_seqgan.brs_seqgan import BRSSeqgan
 
 parser = argparse.ArgumentParser(description='Process some integers.')
 parser.add_argument('--dir', default='./out_rnn/')
-parser.add_argument('--alpha', type=float, default=0.02)
+parser.add_argument('--alpha', type=float, default=0.01)
 parser.add_argument('--l', type=float, default=1.0)
-parser.add_argument('--sigma', type=int, default=0)
+parser.add_argument('--sigma', type=int, default=1)
 parser.add_argument('--mode', default="binary")
 parser.add_argument('--pac_num', type=int, default=5)
 parser.add_argument('--disc', default="RNN")

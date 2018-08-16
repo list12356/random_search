@@ -278,11 +278,16 @@ class BRSCPacGAN:
                 
                 self.sess.run(self.update_Sn_op, feed_dict=feed_update)
                 tmp = self.sess.run(self.S_reward, feed_dict=feed_S)
+                sigma = np.concatenate([reward, tmp])
                 reward = reward - tmp
 
-                import pdb; pdb.set_trace()
                 feed_update[self.reward_ph] = reward
                 self.sess.run(self.update_G_op, feed_dict=feed_update)
+            
+                if self.sigma == 1:
+                    sigma_R = np.std(sigma)
+                else:
+                    sigma_R = 1.
 
             G_loss_curr = self.sess.run(self.G_loss, feed_dict=feed_G)
             
