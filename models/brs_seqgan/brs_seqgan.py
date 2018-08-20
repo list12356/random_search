@@ -21,7 +21,7 @@ import matplotlib.image as mpimg
 class BRSSeqgan():
     def __init__(self, oracle=None, save_dir=None, debug_entropy=False,
             pre_epoch_num=0, disc_type="RNN", sample_mode=RNN_SAMPLE_NOISE,
-            search_num=64, alpha=0.1, v=0.02, sigma=0, rollout_num=1
+            search_num=64, alpha=0.1, v=0.02, sigma=0, rollout_num=16
             ):
         # you can change parameters, generator here
         self.vocab_size = 20
@@ -125,7 +125,7 @@ class BRSSeqgan():
             if self.disc_type == "CNN":
                 self.discriminator = CNNDiscriminator(sequence_length=self.sequence_length, num_classes=2, vocab_size=self.vocab_size,
                                             emd_dim=self.emb_dim, filter_sizes=self.filter_size, num_filters=self.num_filters,
-                                            l2_reg_lambda=self.l2_reg_lambda)
+                                            l2_reg_lambda=self.l2_reg_lambda, img_dim=self.img_feature_dim)
             if self.disc_type == "RNN":
                 self.discriminator = RNNDiscriminator(n_words=self.vocab_size, batch_size=self.batch_size, dim_embed=self.emb_dim,
                                     dim_hidden=self.hidden_dim, sequence_length=self.sequence_length,
@@ -136,6 +136,7 @@ class BRSSeqgan():
         self.update_Sn = []
         self.S_reward_ph = [None] * self.num_workers
         self.S_sample_list = [None] * self.num_workers
+        self.S_reward_sample_list = [None] * self.num_workers
         self.S_loss = [None] * self.num_workers
         self.delta_ph = [None] * self.num_workers
         self.update_G = [None] * len(self.generator.theta_G)
@@ -149,9 +150,14 @@ class BRSSeqgan():
             if self.debug_entropy == True:
                 self.S_loss[w] = -self.searcher[w].pretrain_loss
             else:
-                # prob = self.discriminator.build(self.S_reward_ph[w])
-                prob = self.discriminator.build(self.searcher[w].generated_words)
-                self.S_loss[w] = tf.reduce_mean(tf.log(tf.clip_by_value(prob, 1e-16, 1.0)))
+                if self.disc_type == "CNN":
+                    self.searcher[w].build_reward()
+                    self.S_reward_sample_list[w] = self.searcher[w].generated_words_2
+                    # prob = self.discriminator.build(self.S_reward_ph[w])
+                else:
+                    prob = self.discriminator.build(self.searcher[w].generated_words)
+                    self.S_loss[w] = tf.reduce_mean(tf.log(tf.clip_by_value(prob, 1e-16, 1.0)))
+
             self.S_sample_list[w] = self.searcher[w].generated_words
             for t in range(len(self.generator.theta_G)):
                 with tf.device("/device:GPU:0"):
@@ -182,8 +188,11 @@ class BRSSeqgan():
             self.update_Sp_op = tf.group(*self.update_Sp)
             self.update_G_op = tf.group(*self.update_G)
         
+        if self.disc_type == "RNN":
+            self.S_reward = tf.stack(self.S_loss, 0)
+        else:
+            self.S_reward_sample = tf.stack(self.S_reward_sample_list)
         self.S_sample = tf.stack(self.S_sample_list)
-        self.S_reward = tf.stack(self.S_loss, 0)
         print('finished')
 
 
@@ -293,9 +302,9 @@ class BRSSeqgan():
                 }
             feed_entropy = {}
             for w in range(self.num_workers):
-                    feed[self.searcher[w].noise] = sample
-                    feed_entropy[self.searcher[w].sentence] = seq_batch
-                    feed_entropy[self.searcher[w].noise] = sample
+                feed[self.searcher[w].noise] = sample
+                feed_entropy[self.searcher[w].sentence] = seq_batch
+                feed_entropy[self.searcher[w].noise] = sample
                 
             delta = []
             for t in range(len(self.generator.theta_G)):
@@ -309,25 +318,73 @@ class BRSSeqgan():
             feed_update = {}
             for w in range(self.num_workers):
                 for t in range(len(self.generator.theta_G)):
-                    feed_update[self.delta_ph[w][t]] = delta[t][w]                
-                reward_pos = 0
+                    feed_update[self.delta_ph[w][t]] = delta[t][w]
 
             self.sess.run(self.update_Sp_op, feed_dict=feed_update)
             
             if self.debug_entropy == True:
                 reward = self.sess.run(self.S_reward, feed_dict=feed_entropy)
             else:
-                reward = self.sess.run(self.S_reward, feed_dict=feed)
+                if self.disc_type == "RNN":
+                    reward = self.sess.run(self.S_reward, feed_dict=feed)
+                else:
+                    samples = self.sess.run(self.S_sample, feed_dict=feed)
+                    feed_reward = {}
+                    for w in range(self.num_workers):
+                        feed_reward[self.searcher[w].sentence] = samples[w]
+                        # feed_reward[self.searcher[w].image] = image
+                    reward = [[] for w in range(self.num_workers)]
+                    for i in range(self.rollout_num):
+                        for given_num in range(1, self.sequence_length):
+                            for w in range(self.num_workers):
+                                feed_reward[self.searcher[w].given_num] = given_num
+                            samples = self.sess.run(self.S_reward_sample, feed_dict=feed_reward)
+                            for w in range(self.num_workers):
+                                #TODO: parallel this
+                                feed_reward = {self.discriminator.sentence: samples[w]}
+                                ypred_for_auc = self.sess.run(self.discriminator.ypred_for_auc, feed_reward)
+                                ypred = np.array([item[1] for item in ypred_for_auc])
+                                if i == 0:
+                                    reward[w].append(ypred)
+                                else:
+                                    reward[w][given_num - 1] += ypred
+                    for w in range(self.num_workers):
+                        reward[w] = np.mean(np.array(reward[w])) / (1.0 * self.rollout_num)
+            
+            G_loss_curr = reward
 
             self.sess.run(self.update_Sn_op, feed_dict=feed_update)
-            
-            G_loss_curr = np.mean(reward)
+
             if self.debug_entropy == True:
                 tmp = self.sess.run(self.S_reward, feed_dict=feed_entropy)
             else:
-                tmp = self.sess.run(self.S_reward, feed_dict=feed)
+                if self.disc_type == "RNN":
+                    tmp = self.sess.run(self.S_reward, feed_dict=feed)
+                else:
+                    samples = self.sess.run(self.S_sample, feed_dict=feed)
+                    feed_reward = {}
+                    for w in range(self.num_workers):
+                        feed_reward[self.searcher[w].sentence] = samples[w]
+                        # feed_reward[self.searcher[w].image] = image
+                    tmp = [[] for w in range(self.num_workers)]
+                    for i in range(self.rollout_num):
+                        for given_num in range(1, self.sequence_length):
+                            for w in range(self.num_workers):
+                                feed_reward[self.searcher[w].given_num] = given_num
+                            samples = self.sess.run(self.S_reward_sample, feed_dict=feed_reward)
+                            for w in range(self.num_workers):
+                                #TODO: parallel this
+                                feed_reward = {self.discriminator.sentence: samples[w]}
+                                ypred_for_auc = self.sess.run(self.discriminator.ypred_for_auc, feed_reward)
+                                ypred = np.array([item[1] for item in ypred_for_auc])
+                                if i == 0:
+                                    tmp[w].append(ypred)
+                                else:
+                                    tmp[w][given_num - 1] += ypred
+                    for w in range(self.num_workers):
+                        tmp[w] = np.mean(np.array(tmp[w])) / (1.0 * self.rollout_num)
             sigma = np.concatenate([tmp, reward])
-            reward = reward - tmp
+            reward = np.array(reward) - np.array(tmp)
 
             if self.sigma == 1:
                 sigma_R = np.std(sigma)
@@ -347,10 +404,17 @@ class BRSSeqgan():
             #     else:
             #         row[generated_samples.shape[1] - 1] = 1
             feed[self.discriminator.sentence] = generated_samples
-            # G_loss_curr = self.sess.run(self.discriminator.reward, feed_dict=feed)
-
-            feed[self.discriminator.truth] = seq_batch
-            D_loss_curr,_ = self.sess.run([self.discriminator.d_loss, self.discriminator.train_op], feed_dict=feed)
+            if self.disc_type == "RNN":
+                G_loss_curr = self.sess.run(self.discriminator.fake, feed_dict=feed)
+                G_loss_curr = np.mean(G_loss_curr)
+                feed[self.discriminator.truth] = seq_batch
+                D_loss_curr,_ = self.sess.run([self.discriminator.real, self.discriminator.train_op], feed_dict=feed)
+                D_loss_curr = np.mean(D_loss_curr)
+            else:
+                disc_batch, labels = self.data_loader.disc_batch(generated_samples)
+                feed[self.discriminator.sentence] = disc_batch
+                feed[self.discriminator.label] = labels
+                D_loss_curr,_ = self.sess.run([self.discriminator.d_loss, self.discriminator.train_op], feed_dict=feed)
             
             end = time()
 

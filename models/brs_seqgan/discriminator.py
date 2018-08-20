@@ -143,7 +143,7 @@ class CNNDiscriminator(object):
             with tf.name_scope("loss"):
                 losses = tf.nn.softmax_cross_entropy_with_logits(logits=self.scores, labels=self.label)
                 self.pretrain_loss = tf.reduce_mean(losses) + l2_reg_lambda * l2_loss
-                self.loss = tf.reduce_mean(losses) + l2_reg_lambda * l2_loss + self.disc_prior() + self.disc_noise()
+                self.loss = tf.reduce_mean(losses) + l2_reg_lambda * l2_loss
                 self.d_loss = tf.reshape(tf.reduce_mean(self.loss), shape=[1])
                 self.pretrain_d_loss = tf.reshape(tf.reduce_mean(self.pretrain_loss), shape=[1])
 
@@ -155,27 +155,6 @@ class CNNDiscriminator(object):
         self.train_op = d_optimizer.apply_gradients(grads_and_vars)
         self.train_op_mom = d_optimizer_mom.apply_gradients(grads_and_vars)
         self.pretrain_op = d_optimizer.apply_gradients(pretrain_grad)
-
-    def disc_prior(self):
-        return 0
-        # prior_loss = 0.0
-        # params = [param for param in tf.trainable_variables() if 'CNN' in param.name]
-        # for var in params:
-        #     nn = tf.divide(var, self.prior_std)
-        #     prior_loss += tf.reduce_mean(tf.multiply(nn, nn))
-            
-        # prior_loss /= 10000 ## adh-hoc dataset size=
-        # return prior_loss
-
-    def disc_noise(self): # for SGHMC
-        return 0
-        # noise_loss = 0.0
-        # params = [param for param in tf.trainable_variables() if 'CNN' in param.name]
-        # for var in params:
-        #     noise_ = tf.contrib.distributions.Normal(loc=0., scale=self.noise_std*tf.ones(var.get_shape()))
-        #     noise_loss += tf.reduce_sum(var * noise_.sample())
-        # noise_loss /= 10000 ## ad-hoc dataset size MSCOCO
-        # return noise_loss
 
 
 class RNNDiscriminator(object):
@@ -291,7 +270,7 @@ class RNNDiscriminator(object):
                     prob.append(tf.nn.sigmoid(logit))
 
             # logit = tf.nn.xw_plus_b(x=final_state, weights=self.fc_W, biases=self.fc_b)
-            prob =tf.transpose(tf.stack(prob))
+            prob =tf.transpose(tf.squeeze(tf.stack(prob)))
         # for v in tf.all_variables():
         #     if v.name.startswith(vs_lstm.name):
         #         self.theta_G.append(v)
@@ -302,7 +281,9 @@ class RNNDiscriminator(object):
         fake = self.build(self.sentence)
         real = self.build(self.truth)
         self.real = real
-        self.reward = tf.reduce_mean(tf.log(tf.clip_by_value(fake, 1e-16, 1.0)), axis=0)
+        self.fake = fake
+        # self.reward = tf.reduce_mean(tf.log(tf.clip_by_value(fake, 1e-16, 1.0)), axis=0)
+        self.reward = tf.reduce_mean(tf.log(tf.clip_by_value(fake[:, -1], 1e-16, 1.0)), axis=0)
         self.d_loss = -tf.reduce_mean(tf.log(tf.clip_by_value(real, 1e-16, 1.0))
              + tf.log(tf.clip_by_value(1. - fake, 1e-16, 1.0)))
         # self.reward = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits = logit, labels = self.labels))

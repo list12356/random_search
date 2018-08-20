@@ -79,7 +79,10 @@ class BRSCPacGAN:
                 elif gan_structure == "dc":
                     self.S[w] = DCGenerator(self.Z_dim,self.data_dim, self.pac_num, self.mode, self.batch_size)
             self.S_sample[w] = self.S[w].G_sample
-
+            # for p in range(self.pac_num):
+            #     sample = tf.to_float(tf.random_uniform([32, self.batch_size, 784], 0, 1) < tf.expand_dims(self.S[w].G_sample[p], 0))
+            #     self.S_sample[w].append(tf.reshape(sample, [-1, 784]))
+            
         self.X = []
         for p in range(self.pac_num):
             self.X.append(tf.placeholder(tf.float32, shape=[self.batch_size, self.data_dim]))
@@ -108,8 +111,21 @@ class BRSCPacGAN:
                 loss = tf.reduce_mean(tf.log(S_fake), name="s_loss_" + str(w))
             else:
                 loss = tf.reduce_mean(S_logit_fake, name="s_loss_" + str(w))
-            self.S_loss[w] = loss
+            
+            # log_w = tf.reshape(S_logit_fake, [32, self.batch_size])
+            # log_N = tf.log(32.0)
+            # log_Z_est = tf.reduce_logsumexp(log_w - log_N, axis=0)
+            # log_w_tilde = log_w - log_Z_est - log_N
+            # w_tilde = tf.exp(log_w_tilde)
+            # (32, batch_size)
+            self.S_loss[w] = S_logit_fake
         
+        log_w = tf.stack(self.S_loss, 0)
+        log_N = tf.log(64.0)
+        log_Z_est = tf.reduce_logsumexp(log_w - log_N, axis=0)
+        log_w_tilde = log_w - log_Z_est - log_N
+        w_tilde = tf.exp(log_w_tilde)
+        self.S_reward = tf.squeeze(tf.reduce_mean(w_tilde, axis = 1))
         
         # Alternative losses:
         # -------------------
@@ -171,7 +187,6 @@ class BRSCPacGAN:
                     tf.stack(self.delta_ph[:,t].tolist()), axis=0) / (self.num_workers * self.v)
                 self.update_G[t] = tf.assign(self.G.theta_G[t], self.G.theta_G[t] + update)
             
-            self.S_reward = tf.stack(self.S_loss, 0)
             with tf.device("/device:GPU:0"):
                 self.update_Sn_op = tf.group(*self.update_Sn)
                 self.update_Sp_op = tf.group(*self.update_Sp)
@@ -293,6 +308,7 @@ class BRSCPacGAN:
                     sigma_R = 1.
 
             G_loss_curr = self.sess.run(self.G_loss, feed_dict=feed_G)
+            G_loss_curr = np.mean(sigma)
             
             for p in range(self.pac_num):
                 feed_G[self.X[p]] = X_mb[p]

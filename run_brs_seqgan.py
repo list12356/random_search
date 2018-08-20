@@ -12,7 +12,7 @@ parser.add_argument('--pac_num', type=int, default=5)
 parser.add_argument('--disc', default="RNN")
 parser.add_argument('--pre_num', type=int, default=0)
 parser.add_argument('--adv_num', type=int, default=15000)
-parser.add_argument('--rollout', type=int, default=1)
+parser.add_argument('--rollout', type=int, default=16)
 parser.add_argument('--curriculum', type=int, default=0)
 parser.add_argument('--sample', type=int, default=2)
 args = parser.parse_args()
@@ -35,13 +35,13 @@ adv_num = args.adv_num
 curriculum = args.curriculum
 sample = args.sample
 
-gan = BRSSeqgan(save_dir=out_dir, pre_epoch_num=0, disc_type="RNN", sample_mode=sample,
+gan = BRSSeqgan(save_dir=out_dir, pre_epoch_num=0, disc_type=disc, sample_mode=sample,
     search_num = search_num, alpha = alpha, v = v, sigma = sigma, rollout_num = rollout)
 gan.init_train(dataset="text")
 gan.pretrain(epoch_num=pre_num)
 if curriculum != 0:
     for i in range(30):
-        gan.train(epoch_num=30, max_len=i + 1, save_dir=out_dir)
+        gan.train(epoch_num=1000, max_len=i + 1, save_dir=out_dir)
 else:
     print("fuck")
     gan.train(epoch_num=adv_num)

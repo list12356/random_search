@@ -38,6 +38,7 @@ class Generator:
             if self.mode == "smooth" or self.mode == "gradient":
                 self.G_sample.append(G_prob)
             elif self.mode == "binary":
+                # self.G_sample.append(G_prob)
                 self.G_sample.append(tf.to_float(G_prob > 0.5))
             elif self.mode == "multilevel":
                 G_sample_tmp = tf.to_int32(G_prob > 1/ 10.0)

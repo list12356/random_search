@@ -58,6 +58,23 @@ class TextDataLoader():
 
     def reset_pointer(self):
         self.pointer = 0
+    
+    def disc_batch(self, negative_examples):
+        positive_examples = self.sequence_batch[self.pointer]
+        sentences = np.concatenate([positive_examples, negative_examples], 0)
+
+        # Generate labels
+        positive_labels = [[0, 1] for _ in positive_examples]
+        negative_labels = [[1, 0] for _ in negative_examples]
+        labels = np.concatenate([positive_labels, negative_labels], 0)
+        
+        # Shuffle the data
+        shuffle_indices = np.random.permutation(np.arange(len(labels)))
+        sentences = sentences[shuffle_indices]
+        labels = labels[shuffle_indices]
+
+        # Split batches
+        return sentences[:self.batch_size], labels[:self.batch_size]
 
 
 

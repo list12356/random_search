@@ -264,20 +264,19 @@ class Generator(object):
                     cond=lambda i, _1, _2, _3: i < self.sequence_length,
                     body=_g_recurrence_2,
                     loop_vars=(i, last_word, state, self.generated_words_2))
-                self.generated_words_2 = self.generated_words_2.stack()
+                self.generated_words_2 = tf.transpose(self.generated_words_2.stack())
 
     def get_trainop(self):
         return
         # return tf.train.AdamOptimizer(self.learning_rate).minimize(self.pretrain_loss)
 
 
-    def get_reward(self, sess, sentence, image, mask, rollout_num, discriminator):
+    def get_reward(self, sess, sentence, image, rollout_num, discriminator):
         rewards = []
         for i in range(rollout_num):
             for given_num in range(1, len(sentence[0])): #sequence_length
-                feed = {self.sentence: sentence, self.image: image, self.mask: mask, self.given_num: given_num}
+                feed = {self.sentence: sentence, self.image: image, self.given_num: given_num}
                 samples = sess.run(self.generated_words_2, feed_dict=feed)
-                samples = np.transpose(np.array(samples))
                 feed = {discriminator.sentence: samples, discriminator.image: image}
                 ypred_for_auc = sess.run(discriminator.ypred_for_auc, feed)
                 ypred = np.array([item[1] for item in ypred_for_auc])
