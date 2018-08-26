@@ -167,7 +167,7 @@ class BRSCPacGAN:
             for t in range(len(self.G.theta_G)):
                 dims = len(self.G.size[t])
                 # TODO: add sigma_R
-                update = tf.reduce_sum(tf.reshape(self.reward_ph, [self.num_workers] + [1] * dims) * \
+                update = self.alpha * tf.reduce_sum(tf.reshape(self.reward_ph, [self.num_workers] + [1] * dims) * \
                     tf.stack(self.delta_ph[:,t].tolist()), axis=0) / (self.num_workers * self.v)
                 self.update_G[t] = tf.assign(self.G.theta_G[t], self.G.theta_G[t] + update)
             
