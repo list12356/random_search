@@ -7,7 +7,7 @@ if __name__ == '__main__':
     # mp.set_start_method('spawn')
     parser = argparse.ArgumentParser(description='Process some integers.')
     parser.add_argument('--dir', default="out_brs_pac")
-    parser.add_argument('--alpha', type=float, default=0.001)
+    parser.add_argument('--alpha', type=float, default=0.01)
     parser.add_argument('--l', type=float, default=1.0)
     parser.add_argument('--sigma', type=int, default=1)
     parser.add_argument('--mode', default="binary")
