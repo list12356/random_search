@@ -38,10 +38,10 @@ class Evaluator():
         tf.logging.debug('Key: %s', reward)
         prev_reward = reward
 
-        reward += self.reward_tonic(action)
-        if reward != prev_reward:
-            tf.logging.debug('Tonic: %s', reward)
-        prev_reward = reward
+        # reward += self.reward_tonic(action)
+        # if reward != prev_reward:
+        #     tf.logging.debug('Tonic: %s', reward)
+        # prev_reward = reward
 
         reward += self.reward_penalize_repeating(action)
         if reward != prev_reward:

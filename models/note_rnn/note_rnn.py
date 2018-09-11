@@ -115,10 +115,22 @@ class BRSSeqgan():
             rewards.append(i.get())
         pool.close()
         pool.join()
-        self.log.write(str(self.epoch) + ',' + str(np.mean(np.array(rewards))))
+        self.log.write(str(self.epoch) + ',' + str(np.mean(np.array(rewards))) + '\n')
         self.log.flush()
         print("Average music theory reward: " + str(np.mean(np.array(rewards))))
         return
+
+    def get_reward_theory(self, samples):
+        rewards = []
+        pool = Pool(os.cpu_count())
+        result = list()
+        for piece in samples:
+            result.append(pool.apply_async(calc_reward, args=(piece, self.vocab_size)))
+        for i in result:
+            rewards.append(i.get())
+        pool.close()
+        pool.join()
+        return np.array(rewards)
 
     def decode(self, sample):
         for i in range(len(sample)):
@@ -150,6 +162,7 @@ class BRSSeqgan():
                                         dim_image=self.img_feature_dim, dim_noise=self.noise_dim, sample=self.sample_mode)
                 self.searcher[w].build_model(gradient=False)
                 self.searcher[w].build_generator(self.sequence_length)
+                self.searcher[w].build_generator_fix(self.sequence_length)
         with tf.variable_scope("discriminator"):
             if self.disc_type == "CNN":
                 self.discriminator = CNNDiscriminator(sequence_length=self.sequence_length, num_classes=2, vocab_size=self.vocab_size,
@@ -190,7 +203,7 @@ class BRSSeqgan():
                     prob = self.discriminator.build(self.searcher[w].generated_words)
                     self.S_loss[w] = tf.reduce_mean(tf.log(tf.clip_by_value(prob, 1e-16, 1.0)))
 
-            self.S_sample_list[w] = self.searcher[w].generated_words
+            self.S_sample_list[w] = self.searcher[w].generated_words_fix
             for t in range(len(self.generator.theta_G)):
                 with tf.device("/device:GPU:0"):
                     delta_ph = tf.placeholder(tf.float32, shape=self.generator.size[t])
@@ -312,16 +325,8 @@ class BRSSeqgan():
             _, seq_batch, _ = self.data_loader.next_train_batch()
             generated_samples = self.sess.run(self.generator.generated_words)
             rewards_disc = self.generator.get_reward(self.sess, generated_samples, 16, self.discriminator)
-            rewards_theory = []
-            pool = Pool(os.cpu_count())
-            result = list()
-            for piece in generated_samples:
-                result.append(pool.apply_async(calc_reward, args=(piece, self.vocab_size)))
-            for i in result:
-                rewards_theory.append(i.get())
-            pool.close()
-            pool.join()
-            rewards = rewards_disc + np.array(rewards_theory)
+            rewards_theory = self.get_reward_theory(generated_samples)
+            rewards = rewards_disc + rewards_theory
             feed[self.generator.sentence] = generated_samples
             feed[self.generator.reward] = rewards
             feed[self.discriminator.sentence] = generated_samples
@@ -349,7 +354,7 @@ class BRSSeqgan():
             print('D loss: '+ str(D_loss_curr))
             print('G_loss: ' + str(G_loss_curr))
             self.log.write(str(self.epoch) + ',' + str(np.mean(rewards_disc)) + ',' \
-                + str(np.mean(rewards_theory)) + ',' + str(D_loss_curr) + ',' + str(G_loss_curr))
+                + str(np.mean(rewards_theory)) + ',' + str(D_loss_curr) + ',' + str(G_loss_curr) + '\n')
             self.log.flush()
 
 
@@ -373,14 +378,19 @@ class BRSSeqgan():
         
         if epoch_num != None:
             self.adversarial_epoch_num = epoch_num
-        if max_len != None:
-            self.generator.build_generator(max_len)
-            for w in range(self.num_workers):
-                self.searcher[w].build_generator(max_len)
-        else:
-            self.generator.build_generator(self.sequence_length)
-            for w in range(self.num_workers):
-                self.searcher[w].build_generator(self.sequence_length)
+        # if max_len != None:
+        #     self.generator.build_generator(max_len)
+        #     for w in range(self.num_workers):
+        #         self.searcher[w].build_generator(max_len)
+        #         self.searcher[w].build_generator_fix(max_len)
+        # else:
+        #     self.generator.build_generator(self.sequence_length)
+        #     for w in range(self.num_workers):
+        #         self.searcher[w].build_generator(self.sequence_length)
+        #         self.searcher[w].build_generator_fix(self.sequence_length)
+        
+        if restore != None:
+            self.saver.restore(self.sess, restore)
         
         start = time()
         print('adversarial training:')
@@ -398,8 +408,6 @@ class BRSSeqgan():
                         [self.batch_size, self.noise_dim])
             
             feed = {
-                # self.discriminator.image: img_batch,
-                # self.generator.image: img_batch,
                 self.generator.noise: sample
                 }
             feed_entropy = {}
@@ -424,76 +432,99 @@ class BRSSeqgan():
 
             self.sess.run(self.update_Sp_op, feed_dict=feed_update)
             
+            samples = self.sess.run(self.S_sample, feed_dict=feed)
             if self.debug_entropy == True:
                 reward = self.sess.run(self.S_reward, feed_dict=feed_entropy)
             else:
                 if self.disc_type == "RNN":
                     reward = self.sess.run(self.S_reward, feed_dict=feed)
                 else:
-                    samples = self.sess.run(self.S_sample, feed_dict=feed)
-                    feed_reward = {}
                     for w in range(self.num_workers):
-                        feed_reward[self.searcher[w].sentence] = samples[w]
-                        # feed_reward[self.searcher[w].image] = image
-                    reward = [[] for w in range(self.num_workers)]
-                    for i in range(self.rollout_num):
-                        for given_num in range(1, self.sequence_length):
-                            for w in range(self.num_workers):
-                                feed_reward[self.searcher[w].given_num] = given_num
-                            samples = self.sess.run(self.S_reward_sample, feed_dict=feed_reward)
-                            for w in range(self.num_workers):
-                                #TODO: parallel this
-                                feed_reward = {self.discriminator.sentence: samples[w]}
-                                ypred_for_auc = self.sess.run(self.discriminator.ypred_for_auc, feed_reward)
-                                ypred = np.array([item[1] for item in ypred_for_auc])
-                                if i == 0:
-                                    reward[w].append(ypred)
-                                else:
-                                    reward[w][given_num - 1] += ypred
+                        feed_reward = {self.discriminator.sentence: samples[w]}
+                        ypred_for_auc = self.sess.run(self.discriminator.ypred_for_auc, feed_reward)
+                        ypred = np.array([item[1] for item in ypred_for_auc])
+                        reward = [[] for w in range(self.num_workers)]
+                        reward[w].append(ypred)
                     for w in range(self.num_workers):
-                        reward[w] = np.mean(np.array(reward[w])) / (1.0 * self.rollout_num)
+                        reward[w] = np.mean(np.array(reward[w]))
+                    # feed_reward = {}
+                    # for w in range(self.num_workers):
+                    #     feed_reward[self.searcher[w].sentence] = samples[w]
+                    #     # feed_reward[self.searcher[w].image] = image
+                    # reward = [[] for w in range(self.num_workers)]
+                    # for i in range(self.rollout_num):
+                    #     for given_num in range(1, self.sequence_length):
+                    #         for w in range(self.num_workers):
+                    #             feed_reward[self.searcher[w].given_num] = given_num
+                    #         samples = self.sess.run(self.S_reward_sample, feed_dict=feed_reward)
+                    #         for w in range(self.num_workers):
+                    #             #TODO: parallel this
+                    #             feed_reward = {self.discriminator.sentence: samples[w]}
+                    #             ypred_for_auc = self.sess.run(self.discriminator.ypred_for_auc, feed_reward)
+                    #             ypred = np.array([item[1] for item in ypred_for_auc])
+                    #             if i == 0:
+                    #                 reward[w].append(ypred)
+                    #             else:
+                    #                 reward[w][given_num - 1] += ypred
+                    # for w in range(self.num_workers):
+                    #     reward[w] = np.mean(np.array(reward[w])) / (1.0 * self.rollout_num)
+
+            rewards_theory = [None] * self.num_workers
+            for w in range(self.num_workers):
+                rewards_theory[w] = np.mean(self.get_reward_theory(samples[w]))
             
-            G_loss_curr = reward
+            G_loss_curr = np.mean(reward)
 
             self.sess.run(self.update_Sn_op, feed_dict=feed_update)
 
+            samples = self.sess.run(self.S_sample, feed_dict=feed)
             if self.debug_entropy == True:
                 tmp = self.sess.run(self.S_reward, feed_dict=feed_entropy)
             else:
                 if self.disc_type == "RNN":
                     tmp = self.sess.run(self.S_reward, feed_dict=feed)
                 else:
-                    samples = self.sess.run(self.S_sample, feed_dict=feed)
-                    feed_reward = {}
                     for w in range(self.num_workers):
-                        feed_reward[self.searcher[w].sentence] = samples[w]
-                        # feed_reward[self.searcher[w].image] = image
-                    tmp = [[] for w in range(self.num_workers)]
-                    for i in range(self.rollout_num):
-                        for given_num in range(1, self.sequence_length):
-                            for w in range(self.num_workers):
-                                feed_reward[self.searcher[w].given_num] = given_num
-                            samples = self.sess.run(self.S_reward_sample, feed_dict=feed_reward)
-                            for w in range(self.num_workers):
-                                #TODO: parallel this
-                                feed_reward = {self.discriminator.sentence: samples[w]}
-                                ypred_for_auc = self.sess.run(self.discriminator.ypred_for_auc, feed_reward)
-                                ypred = np.array([item[1] for item in ypred_for_auc])
-                                if i == 0:
-                                    tmp[w].append(ypred)
-                                else:
-                                    tmp[w][given_num - 1] += ypred
+                        feed_reward = {self.discriminator.sentence: samples[w]}
+                        ypred_for_auc = self.sess.run(self.discriminator.ypred_for_auc, feed_reward)
+                        ypred = np.array([item[1] for item in ypred_for_auc])
+                        tmp = [[] for w in range(self.num_workers)]
+                        tmp[w].append(ypred)
                     for w in range(self.num_workers):
-                        tmp[w] = np.mean(np.array(tmp[w])) / (1.0 * self.rollout_num)
+                        tmp[w] = np.mean(np.array(tmp[w]))
+                    # feed_reward = {}
+                    # for w in range(self.num_workers):
+                    #     feed_reward[self.searcher[w].sentence] = samples[w]
+                    #     # feed_reward[self.searcher[w].image] = image
+                    # tmp = [[] for w in range(self.num_workers)]
+                    # for i in range(self.rollout_num):
+                    #     for given_num in range(1, self.sequence_length):
+                    #         for w in range(self.num_workers):
+                    #             feed_reward[self.searcher[w].given_num] = given_num
+                    #         samples = self.sess.run(self.S_reward_sample, feed_dict=feed_reward)
+                    #         for w in range(self.num_workers):
+                    #             #TODO: parallel this
+                    #             feed_reward = {self.discriminator.sentence: samples[w]}
+                    #             ypred_for_auc = self.sess.run(self.discriminator.ypred_for_auc, feed_reward)
+                    #             ypred = np.array([item[1] for item in ypred_for_auc])
+                    #             if i == 0:
+                    #                 tmp[w].append(ypred)
+                    #             else:
+                    #                 tmp[w][given_num - 1] += ypred
+                    # for w in range(self.num_workers):
+                    #     tmp[w] = np.mean(np.array(tmp[w])) / (1.0 * self.rollout_num)
             sigma = np.concatenate([tmp, reward])
             reward = np.array(reward) - np.array(tmp)
 
+            for w in range(self.num_workers):
+                rewards_theory[w] -= np.mean(self.get_reward_theory(samples[w]))
+            
             if self.sigma == 1:
                 sigma_R = np.std(sigma)
             else:
                 sigma_R = 1.
 
-            feed_update[self.reward_ph] = reward
+            feed_update[self.reward_ph] = reward + rewards_theory
             self.sess.run(self.update_G_op, feed_dict=feed_update)
 
             generated_samples = self.sess.run(self.generator.generated_words, feed_dict=feed)
@@ -510,23 +541,14 @@ class BRSSeqgan():
                 feed[self.discriminator.label] = labels
                 D_loss_curr,_ = self.sess.run([self.discriminator.d_loss, self.discriminator.train_op], feed_dict=feed)
             
-            rewards_theory = []
-            pool = Pool(os.cpu_count())
-            result = list()
-            for piece in generated_samples:
-                result.append(pool.apply_async(calc_reward, args=(piece, self.vocab_size)))
-            for i in result:
-                rewards_theory.append(i.get())
-            pool.close()
-            pool.join()
+            
             end = time()
-
             print('epoch:' + str(epoch) + '\t time:' + str(end - start))
             print('D loss: '+ str(D_loss_curr))
             print('G_loss: ' + str(G_loss_curr))
             print('Sigma_R: {:.4}'.format(sigma_R))
             self.log.write(str(self.epoch) + ',' + str(np.mean(G_loss_curr)) + ',' \
-                + str(np.mean(rewards_theory)) + ',' + str(D_loss_curr) + ',' + str(G_loss_curr))
+                + str(np.mean(rewards_theory)) + ',' + str(D_loss_curr) + ',' + str(G_loss_curr) + '\n')
             self.log.flush()
             if self.epoch % self.save_step == 0 or self.epoch == self.adversarial_epoch_num - 1:
                 generated_samples = self.sess.run(self.generator.generated_words, feed_dict=feed)
